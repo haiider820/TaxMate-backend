@@ -1,0 +1,100 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #f5f7fb;
+    color: #1d2433;
+}
+
+.container {
+    width: min(1100px, 90%);
+    margin: 0 auto;
+}
+
+.topbar {
+    background: #0f172a;
+    color: #fff;
+    padding: 18px 0;
+}
+
+.topbar .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.brand {
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+nav {
+    display: flex;
+    gap: 20px;
+}
+
+nav a {
+    color: #dfe7ff;
+    text-decoration: none;
+    font-size: 0.95rem;
+}
+
+.main-content {
+    padding: 60px 0;
+}
+
+.hero {
+    background: linear-gradient(135deg, #e0f2fe, #f8fafc);
+    border-radius: 16px;
+    padding: 40px 30px;
+    margin-bottom: 30px;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+}
+
+.hero h1 {
+    margin: 0 0 10px;
+    font-size: 2.3rem;
+}
+
+.hero p {
+    margin: 0 0 25px;
+    font-size: 1.05rem;
+}
+
+.btn {
+    display: inline-block;
+    background: #2563eb;
+    color: #fff;
+    text-decoration: none;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 20px;
+}
+
+.card {
+    background: #fff;
+    padding: 25px 20px;
+    border-radius: 14px;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+}
+
+.card h3 {
+    margin-top: 0;
+    color: #0f172a;
+}
+
+.footer {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 18px 0;
+    text-align: center;
+}
