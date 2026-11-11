@@ -1,13 +1,17 @@
 # TaxMate backend — blocked items (do not work around these)
 
-## 1. Gate 0 — verified tax rates: OPEN
+## 1. Gate 0 — verified tax rates: PASSED 2026-11-11
 
-`tax_rules` is structure only, with no seed rows and no rates. Until
-Phase 0 gazette verification signs off BOTH TY2026 (Finance Act 2025)
-and TY2027 (Finance Act 2026) and a Sources list is added, the API
-refuses to calculate a final tax figure (`rates_not_verified`, 422).
-Do not add rates from blogs, calculators, or memory. Do not copy rates
-into comments, seeds, or test fixtures as if they were real.
+`tax_rules` now holds the verified rows (migration
+`005_gate0_rates.sql`, `is_verified = 1`): TY2026 salaried Clause (2)
+(6 slabs, 9% surcharge above Rs 10m), TY2027 salaried Clause (2)
+(8 slabs, no surcharge for salaried), and Clause (1) for business/AOP
+in both years (6 slabs, 10% surcharge above Rs 10m). Full tables +
+Sources list: `docs/GATE0.md` and the research report. `POST
+/api/v1/tax-rules/calculate` returns the computed figure; it still
+returns 422 `rates_not_verified` for any year + type with no verified
+row (e.g. `company`). Do not add rates from blogs, calculators, or
+memory.
 
 ## 2. Phase 5B — live PRAL/IRIS adapter: BLOCKED
 

@@ -1,6 +1,7 @@
 <?php
-// TaxMate API — tax years, tax rules (unverified until Gate 0), FBR returns,
-// wealth reconciliation, accountant review, lock, assisted acknowledgement.
+// TaxMate API — tax years, tax rules (Gate 0 verified 2026-11-11,
+// see docs/GATE0.md), FBR returns, wealth reconciliation, accountant
+// review, lock, assisted acknowledgement.
 // Locked returns are immutable: every modifying route refuses a locked return.
 // There is intentionally NO unlock route; the router answers unlock attempts
 // with a forbidden error. No IRIS login, submission, or credential handling.
@@ -50,7 +51,21 @@ function taxmate_handle_fbr(PDO $pdo, string $method, array $segments, array $in
         taxmate_require_user($pdo);
         $stmt = $pdo->query('SELECT id, tax_year_id, taxpayer_type, from_paisa, to_paisa, rate_bps, base_tax_paisa, surcharge_rule, finance_act_source, is_verified FROM tax_rules ORDER BY tax_year_id ASC, from_paisa ASC');
         $rows = $stmt->fetchAll();
-        taxmate_ok(['rules' => $rows, 'verified' => false, 'note' => 'No verified rates are loaded until Gate 0 gazette verification. See docs/BLOCKED.md.']);
+        $verified = false;
+        foreach ($rows as $row) {
+            if ((int)$row['is_verified'] === 1) {
+                $verified = true;
+                break;
+            }
+        }
+        taxmate_ok([
+            'rules' => $rows,
+            'verified' => $verified,
+            'sources' => taxmate_gate0_sources(),
+            'note' => $verified
+                ? 'Verified rates loaded (Gate 0 passed 2026-11-11). See docs/GATE0.md.'
+                : 'No verified rates are loaded until Gate 0 gazette verification. See docs/BLOCKED.md.',
+        ]);
     }
     if ($segments[0] === 'tax-rules' && $method === 'POST' && count($segments) === 2 && $segments[1] === 'calculate') {
         taxmate_require_user($pdo);
@@ -61,11 +76,11 @@ function taxmate_handle_fbr(PDO $pdo, string $method, array $segments, array $in
         }
         $taxable = taxmate_require_paisa($input, 'taxable_paisa');
         try {
-            $tax = taxmate_calculate_tax($pdo, $taxYearId, $type, $taxable);
+            $breakdown = taxmate_calculate_tax_breakdown($pdo, $taxYearId, $type, $taxable);
         } catch (TaxRatesNotVerified $e) {
             taxmate_error('rates_not_verified', 'rates not verified (Gate 0 pending)', 422);
         }
-        taxmate_ok(['tax_payable_paisa' => $tax]);
+        taxmate_ok($breakdown);
     }
 
     if ($segments[0] !== 'orgs' || count($segments) < 3 || $segments[2] !== 'fbr-returns') {
@@ -204,6 +219,25 @@ function taxmate_handle_fbr(PDO $pdo, string $method, array $segments, array $in
         if ($lines === []) {
             taxmate_error('not_ready', 'A return needs at least one line before it can lock.', 409);
         }
+        // Tax payable (Gate 0 passed 2026-11-11): slab tax + surcharge
+        // on the return's income lines, from the verified tax_rules.
+        // If no verified table exists for this year + type, the
+        // snapshot keeps null + the pending note, never a guess.
+        $taxable = 0;
+        foreach ($lines as $line) {
+            if ($line['line_kind'] === 'income') {
+                $taxable += (int)$line['amount_paisa'];
+            }
+        }
+        $taxPayable = null;
+        $taxNote = 'rates not verified (Gate 0 pending)';
+        try {
+            $breakdown = taxmate_calculate_tax_breakdown($pdo, (int)$ret['tax_year_id'], $ret['taxpayer_type'], $taxable);
+            $taxPayable = $breakdown['tax_payable_paisa'];
+            $taxNote = 'Rates verified (Gate 0 passed 2026-11-11)';
+        } catch (TaxRatesNotVerified $e) {
+            // Keep null + pending note (set above).
+        }
         $snapshot = [
             'return_id' => $returnId,
             'organization_id' => $orgId,
@@ -211,8 +245,8 @@ function taxmate_handle_fbr(PDO $pdo, string $method, array $segments, array $in
             'taxpayer_type' => $ret['taxpayer_type'],
             'lines' => $lines,
             'reconciliation' => $recon,
-            'tax_payable_paisa' => null,
-            'tax_note' => 'rates not verified (Gate 0 pending)',
+            'tax_payable_paisa' => $taxPayable,
+            'tax_note' => $taxNote,
         ];
         $snapshotJson = json_encode($snapshot);
         $hash = hash('sha256', $snapshotJson);

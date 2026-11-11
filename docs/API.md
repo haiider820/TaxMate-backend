@@ -88,11 +88,13 @@ There are intentionally NO update/delete routes for transactions in v1.
 - `GET /api/v1/tax-years` — TY2026 (2025-07-01 to 2026-06-30, Finance Act
   2025, historical/late only) and TY2027 (2026-07-01 to 2027-06-30,
   Finance Act 2026, live year). Dates only, no rates.
-- `GET /api/v1/tax-rules` — returns the rules table (currently empty)
-  with verified=false and a Gate 0 note. `POST /api/v1/tax-rules/calculate`
-  — body: tax_year_id, taxpayer_type, taxable_paisa. With no verified
-  rates it returns 422 `rates_not_verified` ("rates not verified (Gate 0
-  pending)") instead of a guessed figure.
+- `GET /api/v1/tax-rules` — returns the rules table with verified=true
+  (Gate 0 passed 2026-11-11) and the Sources list. `POST
+  /api/v1/tax-rules/calculate` — body: tax_year_id, taxpayer_type,
+  taxable_paisa. Returns slab_tax_paisa, surcharge_paisa and
+  tax_payable_paisa from the verified rows. With no verified rates for
+  the year + type it returns 422 `rates_not_verified` ("rates not
+  verified (Gate 0 pending)") instead of a guessed figure.
 - `GET/POST /api/v1/orgs/{id}/fbr-returns` — tax_year_id, taxpayer_type
   (salaried|business|aop|company), opening_net_paisa, closing_net_paisa.
 - `GET /api/v1/orgs/{id}/fbr-returns/{rid}` — return + lines +
@@ -113,8 +115,11 @@ There are intentionally NO update/delete routes for transactions in v1.
 - `POST .../fbr-returns/{rid}/lock` — owner/admin/accountant only.
   Requires status ready + approved review + reconciliation difference
   exactly zero + at least one line. Sets status locked, stores a JSON
-  snapshot + SHA-256 hash, tax_payable_paisa null with the Gate 0 note.
-  After lock, lines/wealth/withholding/review/lock all return 409.
+  snapshot + SHA-256 hash, with tax_payable_paisa computed from the
+  verified rates (slab tax + surcharge on the income lines) and a
+  "Rates verified" note — or null + the Gate 0 note when no verified
+  table exists for the year + type. After lock, lines/wealth/
+  withholding/review/lock all return 409.
 - `POST .../fbr-returns/{rid}/assisted-acknowledgement` — requires a
   locked return; body: acknowledgement_number, filed_date (not in the
   future). Records an assisted submission attempt. The user files on IRIS
@@ -130,5 +135,5 @@ There are intentionally NO update/delete routes for transactions in v1.
 
 No IRIS login, scraping, submission, or credential storage. No
 auto-payment. No direct MySQL connection from the app. No PDF generation
-(backend concern: none; the app's Excel export is separate). No
-verified tax rates until Gate 0.
+(backend concern: none; the app's Excel export is separate). Tax rates
+are the Gate 0-verified tables only (docs/GATE0.md); no other rates.
