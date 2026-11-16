@@ -1,7 +1,9 @@
 <?php
 // TaxMate API — categories, transactions (with reversing corrections), budgets.
-// No DELETE and no UPDATE routes exist for transactions in v1: a wrong entry
-// is corrected by a new reversing entry, the original is never edited.
+// No DELETE routes and no amount edits exist for transactions in v1: a wrong
+// entry is corrected by a new reversing entry, the original is never edited.
+// The one UPDATE is the review status flip (pending_review -> verified),
+// which changes no amount — see the verify route below.
 
 declare(strict_types=1);
 
@@ -124,6 +126,28 @@ function taxmate_handle_finance(PDO $pdo, string $method, array $segments, array
         $id = (int)$pdo->lastInsertId();
         taxmate_audit($pdo, $orgId, (int)$user['id'], 'transaction.corrected', 'transaction', $id, ['original_id' => $originalId], ['reason' => $reason]);
         taxmate_ok(['id' => $id, 'correction_of_id' => $originalId], 201);
+    }
+    if ($resource === 'transactions' && count($segments) === 5 && $segments[3] !== '' && $segments[4] === 'verify' && $method === 'POST') {
+        // Review action, not a correction: flips pending_review to verified
+        // and lets the row enter totals. No amount is changed here.
+        // Same role rule as the FBR approve flows: owner/admin/accountant
+        // only — member and viewer cannot verify.
+        taxmate_require_member($pdo, (int)$user['id'], $orgId, ['owner', 'admin', 'accountant']);
+        $txId = (int)$segments[3];
+        $stmt = $pdo->prepare('SELECT id, user_id, category_id, type, amount_paisa, currency, note, occurred_at, source, status, correction_of_id FROM transactions WHERE id = ? AND organization_id = ? LIMIT 1');
+        $stmt->execute([$txId, $orgId]);
+        $tx = $stmt->fetch();
+        if ($tx === false) {
+            taxmate_error('not_found', 'Transaction not found in this organization.', 404);
+        }
+        if ($tx['status'] !== 'pending_review') {
+            taxmate_error('already_verified', 'This transaction is already verified.', 409);
+        }
+        $stmt = $pdo->prepare("UPDATE transactions SET status = 'verified' WHERE id = ? AND organization_id = ? AND status = 'pending_review'");
+        $stmt->execute([$txId, $orgId]);
+        taxmate_audit($pdo, $orgId, (int)$user['id'], 'transaction.verified', 'transaction', $txId, ['status' => 'pending_review'], ['status' => 'verified']);
+        $tx['status'] = 'verified';
+        taxmate_ok($tx);
     }
 
     if ($resource === 'budgets' && $method === 'GET' && count($segments) === 3) {

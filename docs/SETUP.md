@@ -59,8 +59,10 @@ any failure; do not deploy past a php -l failure.
 
 ## 5. Follow-ups deliberately left for later (not in this push)
 
-- A review endpoint for pending_review voice/scan transactions (v1 keeps
-  them out of totals; the flip-to-verified step is not yet an endpoint).
+- A review endpoint for pending_review voice/scan transactions — DONE:
+  `POST /api/v1/orgs/{id}/transactions/{tid}/verify` flips a pending row
+  to verified (owner/admin/accountant only, audited). Totals use verified
+  rows only, so a verified row enters budget totals from that point on.
 - Member removal, category deletion, and invoice search filters.
 - A real production deployment guide (server, TLS, backups) — no server
   URL, domain, or IP is invented in this repo.

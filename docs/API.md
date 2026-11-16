@@ -44,20 +44,26 @@ client-supplied totals and never from AI fields.
   fbr_income_head (optional).
 - `GET /api/v1/orgs/{id}/transactions` — filters: type, category_id,
   status, from, to. Voice/scan entries are created as pending_review and
-  are excluded from budget totals until reviewed; there is no review
-  endpoint in v1 that flips status in place — a reviewed entry is kept as
-  a record and totals use verified rows only (see SETUP follow-ups).
+  are excluded from budget totals until reviewed; the pending queue is
+  listed with `?status=pending_review`, and totals use verified rows only.
 - `POST /api/v1/orgs/{id}/transactions` — type, amount_paisa, occurred_at
   (YYYY-MM-DD), category_id (optional), note, source (manual|voice|scan).
 - `POST /api/v1/orgs/{id}/transactions/{tid}/correct` — body: reason.
   Creates a reversing entry (negative amount, same type, correction_of_id
   set). The original row is never edited or deleted.
+- `POST /api/v1/orgs/{id}/transactions/{tid}/verify` — owner/admin/
+  accountant only. Flips a pending_review row to verified (review action,
+  not a correction: no amount changes). Returns the updated row. An
+  already-verified row returns 409 already_verified; a row from another
+  org returns 404. Audited as `transaction.verified`.
 - `GET/POST /api/v1/orgs/{id}/budgets` — category_id (null = overall),
   period_type (weekly|monthly), amount_limit_paisa, alert_threshold_pct,
   start_date. `GET /api/v1/orgs/{id}/budgets/{bid}/alert` — spent_paisa,
   limit_paisa, percent, state (ok|alert|over), from verified expense rows.
 
-There are intentionally NO update/delete routes for transactions in v1.
+There are intentionally NO delete routes and no amount-edit routes for
+transactions in v1. The verify route above is the only in-place change,
+and it flips review status only.
 
 ## Business books
 
