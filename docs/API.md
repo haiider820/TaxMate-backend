@@ -83,6 +83,10 @@ and it flips review status only.
 - `GET/POST /api/v1/orgs/{id}/bank-transactions` — import body: rows[]
   (bank_account_id, occurred_at, description, amount_paisa), import_batch.
   Rows start unmatched and never enter ledger totals by themselves.
+- `bank_transactions` has no direction column: `amount_paisa` is a signed
+  BIGINT — positive = credit, negative = debit. `propose-matches` matches
+  on ±amount. Clients push signed amounts and restore direction from the
+  sign on read.
 - `GET .../bank-transactions/{bid}/propose-matches` — exact-amount
   candidates only; changes nothing.
 - `POST .../bank-transactions/{bid}/apply-match` — body: transaction_id.
