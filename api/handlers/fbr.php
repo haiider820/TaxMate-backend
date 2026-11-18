@@ -1,10 +1,13 @@
 <?php
 // TaxMate API — tax years, tax rules (Gate 0 verified 2026-11-11,
 // see docs/GATE0.md), FBR returns, wealth reconciliation, accountant
-// review, lock, assisted acknowledgement.
+// review, lock, assisted acknowledgement, line void/correct.
 // Locked returns are immutable: every modifying route refuses a locked return.
 // There is intentionally NO unlock route; the router answers unlock attempts
 // with a forbidden error. No IRIS login, submission, or credential handling.
+// Lines are never hard-deleted: a wrong line is voided (status 'void',
+// excluded from reconciliation and lock snapshots) and a correction
+// inserts a new active line that supersedes it.
 
 declare(strict_types=1);
 
@@ -21,7 +24,7 @@ function taxmate_fbr_return(PDO $pdo, int $orgId, int $returnId): array
 
 function taxmate_fbr_reconciliation(PDO $pdo, array $ret): array
 {
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount_paisa), 0) AS total FROM fbr_return_lines WHERE fbr_return_id = ? AND line_kind = 'income'");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount_paisa), 0) AS total FROM fbr_return_lines WHERE fbr_return_id = ? AND line_kind = 'income' AND status = 'active'");
     $stmt->execute([(int)$ret['id']]);
     $income = (int)$stmt->fetch()['total'];
     $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount_paisa), 0) AS total FROM wealth_expenses WHERE organization_id = ? AND tax_year_id = ?');
@@ -127,7 +130,7 @@ function taxmate_handle_fbr(PDO $pdo, string $method, array $segments, array $in
     $sub = $segments[4] ?? '';
 
     if ($sub === '' && $method === 'GET') {
-        $stmt = $pdo->prepare('SELECT id, line_kind, iris_field_code, amount_paisa, source_ref FROM fbr_return_lines WHERE fbr_return_id = ? ORDER BY id ASC');
+        $stmt = $pdo->prepare('SELECT id, line_kind, iris_field_code, amount_paisa, source_ref, status, supersedes_line_id, voided_at FROM fbr_return_lines WHERE fbr_return_id = ? ORDER BY id ASC');
         $stmt->execute([$returnId]);
         $ret['lines'] = $stmt->fetchAll();
         $ret['reconciliation'] = taxmate_fbr_reconciliation($pdo, $ret);
@@ -136,7 +139,72 @@ function taxmate_handle_fbr(PDO $pdo, string $method, array $segments, array $in
     if ($sub === 'unlock') {
         taxmate_error('forbidden', 'Unlocking a locked FBR return is forbidden. A locked return is immutable.', 403);
     }
-    if ($sub === 'lines' && $method === 'POST') {
+    if ($sub === 'lines' && $method === 'POST' && count($segments) === 7 && ($segments[6] === 'void' || $segments[6] === 'correct')) {
+        // Line void / correct: soft void only, never a hard DELETE.
+        // A correction voids the old line and inserts a new active line
+        // that supersedes it, so the full history stays in the table.
+        $lineId = (int)($segments[5] ?? 0);
+        if ($lineId <= 0) {
+            taxmate_error('not_found', 'Route not found.', 404);
+        }
+        $stmt = $pdo->prepare('SELECT id, line_kind, iris_field_code, amount_paisa, source_ref, status FROM fbr_return_lines WHERE id = ? AND fbr_return_id = ? LIMIT 1');
+        $stmt->execute([$lineId, $returnId]);
+        $line = $stmt->fetch();
+        if ($line === false) {
+            taxmate_error('not_found', 'FBR return line not found in this return.', 404);
+        }
+        taxmate_require_member($pdo, (int)$user['id'], $orgId, ['owner', 'admin', 'accountant']);
+        if ($locked) {
+            taxmate_error('locked', 'This return is locked and immutable.', 403);
+        }
+        if ($line['status'] === 'void') {
+            taxmate_error('already_void', 'This line has already been voided.', 409);
+        }
+        if ($segments[6] === 'void') {
+            $reason = null;
+            if (isset($input['reason'])) {
+                if (!is_string($input['reason']) || strlen(trim($input['reason'])) > 300) {
+                    taxmate_error('invalid_field', 'Field reason is too long.', 422);
+                }
+                $reason = trim($input['reason']);
+                if ($reason === '') {
+                    $reason = null;
+                }
+            }
+            $stmt = $pdo->prepare("UPDATE fbr_return_lines SET status = 'void', voided_at = NOW(), voided_by = ? WHERE id = ? AND status = 'active'");
+            $stmt->execute([(int)$user['id'], $lineId]);
+            taxmate_audit($pdo, $orgId, (int)$user['id'], 'fbr_return.line_voided', 'fbr_return_line', $lineId, ['status' => 'active'], ['status' => 'void', 'reason' => $reason]);
+            taxmate_ok(['id' => $lineId, 'status' => 'void']);
+        }
+        // Correct: void the old line exactly as above, then insert the
+        // replacement with the corrected values (omitted fields copied).
+        $amount = taxmate_require_paisa($input, 'amount_paisa');
+        if ($amount <= 0) {
+            taxmate_error('invalid_field', 'amount_paisa must be greater than zero.', 422);
+        }
+        $code = $line['iris_field_code'];
+        if (isset($input['iris_field_code'])) {
+            if (!is_string($input['iris_field_code']) || trim($input['iris_field_code']) === '' || strlen(trim($input['iris_field_code'])) > 100) {
+                taxmate_error('invalid_field', 'Field iris_field_code is too long.', 422);
+            }
+            $code = trim($input['iris_field_code']);
+        }
+        $source = $line['source_ref'];
+        if (isset($input['source_ref'])) {
+            if (!is_string($input['source_ref']) || trim($input['source_ref']) === '' || strlen(trim($input['source_ref'])) > 300) {
+                taxmate_error('invalid_field', 'Field source_ref is too long.', 422);
+            }
+            $source = trim($input['source_ref']);
+        }
+        $stmt = $pdo->prepare("UPDATE fbr_return_lines SET status = 'void', voided_at = NOW(), voided_by = ? WHERE id = ? AND status = 'active'");
+        $stmt->execute([(int)$user['id'], $lineId]);
+        $stmt = $pdo->prepare('INSERT INTO fbr_return_lines (fbr_return_id, line_kind, iris_field_code, amount_paisa, source_ref, supersedes_line_id) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$returnId, $line['line_kind'], $code, $amount, $source, $lineId]);
+        $newId = (int)$pdo->lastInsertId();
+        taxmate_audit($pdo, $orgId, (int)$user['id'], 'fbr_return.line_corrected', 'fbr_return_line', $newId, ['id' => $lineId, 'line_kind' => $line['line_kind'], 'iris_field_code' => $line['iris_field_code'], 'amount_paisa' => (int)$line['amount_paisa'], 'source_ref' => $line['source_ref'], 'status' => 'void'], ['id' => $newId, 'line_kind' => $line['line_kind'], 'iris_field_code' => $code, 'amount_paisa' => $amount, 'source_ref' => $source, 'status' => 'active', 'supersedes_line_id' => $lineId]);
+        taxmate_ok(['id' => $newId, 'supersedes_line_id' => $lineId, 'status' => 'active'], 201);
+    }
+    if ($sub === 'lines' && $method === 'POST' && count($segments) === 5) {
         if ($locked) {
             taxmate_error('locked', 'This return is locked and immutable.', 409);
         }
@@ -213,7 +281,7 @@ function taxmate_handle_fbr(PDO $pdo, string $method, array $segments, array $in
         if (!$recon['balances']) {
             taxmate_error('reconciliation_failed', 'Wealth reconciliation does not balance. Difference must be exactly zero.', 409);
         }
-        $stmt = $pdo->prepare('SELECT id, line_kind, iris_field_code, amount_paisa, source_ref FROM fbr_return_lines WHERE fbr_return_id = ? ORDER BY id ASC');
+        $stmt = $pdo->prepare("SELECT id, line_kind, iris_field_code, amount_paisa, source_ref FROM fbr_return_lines WHERE fbr_return_id = ? AND status = 'active' ORDER BY id ASC");
         $stmt->execute([$returnId]);
         $lines = $stmt->fetchAll();
         if ($lines === []) {

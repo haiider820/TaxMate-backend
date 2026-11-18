@@ -108,23 +108,41 @@ and it flips review status only.
 - `GET/POST /api/v1/orgs/{id}/fbr-returns` — tax_year_id, taxpayer_type
   (salaried|business|aop|company), opening_net_paisa, closing_net_paisa.
 - `GET /api/v1/orgs/{id}/fbr-returns/{rid}` — return + lines +
-  reconciliation.
+  reconciliation. Each line carries status (active|void),
+  supersedes_line_id and voided_at; voided lines are shown, never counted.
 - `POST .../fbr-returns/{rid}/lines` — line_kind (income|expense|other),
-  iris_field_code, amount_paisa, source_ref (required). No update/delete.
+  iris_field_code, amount_paisa, source_ref (required). No update/delete:
+  a wrong line is voided or corrected, never rewritten in place.
+- `POST .../fbr-returns/{rid}/lines/{lid}/void` — owner/admin/accountant
+  only; body {} or {reason} (optional string, max 300, recorded in the
+  audit entry only). Sets the line status void (voided_at, voided_by);
+  the row stays in the table. 200 {id, status:'void'}. Other org's
+  line 404; member/viewer 403; locked return 403 `locked`; already void
+  409 `already_void`.
+- `POST .../fbr-returns/{rid}/lines/{lid}/correct` — owner/admin/
+  accountant only; body: amount_paisa (required, integer paisa, must be
+  > 0), iris_field_code (optional, max 100), source_ref (optional, max
+  300). Missing/invalid body 422. Voids the old line exactly as /void
+  does, then inserts a new active line (line_kind + return copied from
+  the old line, omitted fields copied, supplied fields replaced) with
+  supersedes_line_id = the old line id. Audit action
+  fbr_return.line_corrected with old and new values. 201 {id (new line),
+  supersedes_line_id, status:'active'}. Same 404/403/409 rules as /void.
 - `POST .../fbr-returns/{rid}/wealth` — kind (asset|liability|expense),
   name, amount_paisa, description (optional).
 - `POST .../fbr-returns/{rid}/withholding` — source, amount_paisa,
   psid/cpr_no (optional, recorded only; payment happens on IRIS/e-payment).
 - `GET .../fbr-returns/{rid}/reconciliation` — opening + income lines −
   wealth expenses, expected closing, difference, balances. Wealth
-  reconciliation definition used here: income = sum of income lines;
-  expenses = sum of wealth_expenses for the org + tax year. Expense lines
-  are checklist items, not double-counted as wealth expenses.
+  reconciliation definition used here: income = sum of active income lines
+  (voided lines never count); expenses = sum of wealth_expenses for the
+  org + tax year. Expense lines are checklist items, not double-counted
+  as wealth expenses.
 - `POST .../fbr-returns/{rid}/review` — owner/admin/accountant only;
   decision approve (status ready) or reject (status in_review).
 - `POST .../fbr-returns/{rid}/lock` — owner/admin/accountant only.
   Requires status ready + approved review + reconciliation difference
-  exactly zero + at least one line. Sets status locked, stores a JSON
+  exactly zero + at least one active line. Sets status locked, stores a JSON
   snapshot + SHA-256 hash, with tax_payable_paisa computed from the
   verified rates (slab tax + surcharge on the income lines) and a
   "Rates verified" note — or null + the Gate 0 note when no verified
