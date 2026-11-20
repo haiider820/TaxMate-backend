@@ -76,6 +76,53 @@ function taxmate_handle_auth(PDO $pdo, string $method, array $segments, array $i
         taxmate_ok(['token' => $plain, 'user' => taxmate_public_user($user)]);
     }
 
+    if ($action === 'change-password' && $method === 'POST') {
+        // Signed-in password change only (no email, no reset code):
+        // the current password must verify before the hash is
+        // replaced. Every OTHER session is revoked so a password
+        // change signs the user out everywhere else; the current
+        // session stays signed in.
+        $user = taxmate_require_user($pdo);
+        taxmate_require_fields($input, ['current_password', 'new_password']);
+        $current = $input['current_password'];
+        $new = $input['new_password'];
+        if (!is_string($new) || strlen($new) < 8) {
+            taxmate_error('invalid_field', 'New password must be at least 8 characters.', 422);
+        }
+        if (!is_string($current) || $current === '') {
+            taxmate_error('unauthorized', 'Current password is incorrect.', 401);
+        }
+        $stmt = $pdo->prepare('SELECT password_hash FROM users WHERE id = ? LIMIT 1');
+        $stmt->execute([(int)$user['id']]);
+        $row = $stmt->fetch();
+        if ($row === false || !password_verify($current, (string)$row['password_hash'])) {
+            taxmate_error('unauthorized', 'Current password is incorrect.', 401);
+        }
+        $stmt = $pdo->prepare('UPDATE users SET password_hash = ? WHERE id = ?');
+        $stmt->execute([password_hash($new, PASSWORD_DEFAULT), (int)$user['id']]);
+        $token = taxmate_bearer_token();
+        if ($token !== null) {
+            $stmt = $pdo->prepare('DELETE FROM api_tokens WHERE user_id = ? AND token_hash != ?');
+            $stmt->execute([(int)$user['id'], hash('sha256', $token)]);
+        } else {
+            $stmt = $pdo->prepare('DELETE FROM api_tokens WHERE user_id = ?');
+            $stmt->execute([(int)$user['id']]);
+        }
+        // Audit under the user's individual org, best effort: no
+        // individual org means no audit row, never a failed request.
+        $stmt = $pdo->prepare(
+            'SELECT o.id FROM organizations o ' .
+            'JOIN organization_members m ON m.organization_id = o.id ' .
+            "WHERE m.user_id = ? AND o.type = 'individual' ORDER BY o.id ASC LIMIT 1"
+        );
+        $stmt->execute([(int)$user['id']]);
+        $orgRow = $stmt->fetch();
+        if ($orgRow !== false) {
+            taxmate_audit($pdo, (int)$orgRow['id'], (int)$user['id'], 'user.password_changed', 'user', (int)$user['id']);
+        }
+        taxmate_ok(['password_changed' => true]);
+    }
+
     if ($action === 'logout' && $method === 'POST') {
         $token = taxmate_bearer_token();
         if ($token !== null) {
